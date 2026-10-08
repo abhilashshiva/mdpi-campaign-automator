@@ -265,7 +265,11 @@ def run_mdpi_campaign(
     if final_df.empty:
         raise ValueError("MDPI exports were downloaded, but no author rows had a matched email address. Ensure you are signed in.")
 
-    output_filename = "Campaign_Results.xlsx"
+    from datetime import datetime
+    safe_keyword = re.sub(r'\W+', '_', keywords[0]).strip('_')
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_filename = f"{safe_keyword}_{timestamp}.xlsx"
+    
     _progress(progress_callback, f"Saving {len(raw_df)} raw papers and {len(final_df)} clean author entries to {output_filename}...")
     
     with pd.ExcelWriter(output_filename, engine="openpyxl") as writer:
