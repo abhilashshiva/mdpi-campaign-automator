@@ -115,7 +115,10 @@ def _build_campaign_dataframes(dataframes):
     # 5. Remove emails with length < 5 or >= 40
     final_df = final_df[final_df["Email"].str.len().between(5, 39)]
     
-    # 6. Sort A->Z by Email
+    # 6. Remove authors with length < 5 or >= 40
+    final_df = final_df[final_df["Author"].str.len().between(5, 39)]
+    
+    # 7. Sort A->Z by Email
     final_df = final_df.sort_values(by="Email", ascending=True)
 
     return raw_df, final_df
