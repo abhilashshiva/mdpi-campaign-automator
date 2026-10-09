@@ -97,7 +97,28 @@ def _build_campaign_dataframes(dataframes):
             seen_author_rows.add(clean_key)
             clean_rows.append({"Title": title, "Author": author, "Email": email})
 
-    return raw_df, pd.DataFrame(clean_rows, columns=["Title", "Author", "Email"])
+    final_df = pd.DataFrame(clean_rows, columns=["Email", "Author", "Title"])
+    
+    # 1. Remove duplicates based strictly on Email
+    final_df = final_df.drop_duplicates(subset=["Email"], keep="first")
+    
+    # 2. Remove @gmail.com
+    final_df = final_df[~final_df["Email"].str.lower().str.contains("@gmail.com")]
+    
+    # 3. Remove emails starting with numbers
+    final_df = final_df[~final_df["Email"].str.match(r"^[0-9]")]
+    
+    # 4. Remove low-income country TLDs
+    bad_tlds = (".in", ".pk", ".ir", ".iq", ".et", ".bd", ".ng", ".tw")
+    final_df = final_df[~final_df["Email"].str.lower().str.endswith(bad_tlds)]
+    
+    # 5. Remove emails with length < 5 or >= 40
+    final_df = final_df[final_df["Email"].str.len().between(5, 39)]
+    
+    # 6. Sort A->Z by Email
+    final_df = final_df.sort_values(by="Email", ascending=True)
+
+    return raw_df, final_df
 
 
 def _ensure_legacy_view(page):
