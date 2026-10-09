@@ -1,5 +1,6 @@
 import re
 import time
+import random
 from datetime import date
 from pathlib import Path
 import urllib.parse
@@ -10,6 +11,10 @@ from playwright.sync_api import sync_playwright
 
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 PAGE_SETTLE_MS = 3000
+
+def _human_delay(min_sec=1.0, max_sec=2.5):
+    """Wait for a random amount of time to mimic human jitter."""
+    time.sleep(random.uniform(min_sec, max_sec))
 
 class MDPIBrowserSession:
     def __init__(self):
@@ -29,8 +34,9 @@ class MDPIBrowserSession:
         self.context = self.browser.new_context(
             accept_downloads=True,
             viewport={"width": 1440, "height": 1000},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        self.context.set_default_navigation_timeout(45000)
+        self.context.set_default_navigation_timeout(60000)
         self.page = self.context.new_page()
         return self.page
 
@@ -95,6 +101,9 @@ def _build_campaign_dataframes(dataframes):
 
 
 def _ensure_legacy_view(page):
+    # Wait for MDPI's dynamic javascript to actually render the banner
+    _human_delay(3.0, 4.0)
+    
     # Attempt to click anything that says 'old version' to force the legacy view
     page.evaluate("""() => {
         let links = Array.from(document.querySelectorAll('a, button'));
@@ -102,10 +111,8 @@ def _ensure_legacy_view(page):
         if (directLink) { directLink.click(); return; }
         
         let containers = Array.from(document.querySelectorAll('div, p, span, section'));
-        // Find the most specific container that has the text
         let validContainers = containers.filter(el => el.textContent && el.textContent.toLowerCase().includes('access the old version'));
         if (validContainers.length > 0) {
-            // Sort by text length to find the innermost container
             validContainers.sort((a, b) => a.textContent.length - b.textContent.length);
             let a = validContainers[0].querySelector('a');
             if (a) { a.click(); return; }
@@ -114,6 +121,7 @@ def _ensure_legacy_view(page):
         let returnOldBtn = document.querySelector('button[data-track-id="return-old"]');
         if (returnOldBtn) { returnOldBtn.click(); return; }
     }""")
+    _human_delay(2.0, 3.0)
 
 def run_mdpi_campaign(
     email,
@@ -136,14 +144,15 @@ def run_mdpi_campaign(
 
     _progress(progress_callback, "Opening MDPI login page: https://auth.mdpi.com/login")
     page.goto("https://auth.mdpi.com/login", wait_until="domcontentloaded")
+    _human_delay(1.5, 3.0)
     
     # Check if login form is present
     if page.locator("#username").count() > 0:
         _progress(progress_callback, "Filling credentials...")
         page.locator("#username").fill(email)
-        time.sleep(0.5)
+        _human_delay(0.5, 1.2)
         page.locator("#password").fill(password)
-        time.sleep(0.5)
+        _human_delay(0.5, 1.2)
         page.get_by_role("button", name="Continue").click()
         
         try:
@@ -152,13 +161,14 @@ def run_mdpi_campaign(
         except PlaywrightTimeoutError:
             raise RuntimeError("Login timed out. Check the browser window.")
             
-    time.sleep(PAGE_SETTLE_MS / 1000)
+    _human_delay(PAGE_SETTLE_MS / 1000, (PAGE_SETTLE_MS / 1000) + 1.5)
 
     for keyword in keywords:
         # Step 1: Visit generic search page to force the old version cookie
         encoded_kw = urllib.parse.quote_plus(keyword)
         _progress(progress_callback, f"Initiating search for '{keyword}'...")
         page.goto(f"https://www.mdpi.com/search?q={encoded_kw}", wait_until="domcontentloaded")
+        _human_delay(1.5, 3.0)
         
         try:
             page.wait_for_function("""() => document.querySelectorAll('.article-item').length > 0 || Array.from(document.querySelectorAll('a, button, span')).some(el => el.textContent && el.textContent.toLowerCase().includes('old version'))""", timeout=15000)
@@ -180,6 +190,7 @@ def run_mdpi_campaign(
             raise RuntimeError(f"Failed to load legacy search results for '{keyword}'.")
 
         # Step 3: Find out how many pages there are
+        _human_delay(1.5, 3.0)
         hrefs = page.locator('#exportArticles .pages a[href*="page_no="]').evaluate_all("(links) => links.map((l) => l.href)")
         page_numbers = [int(m.group(1)) for h in hrefs if (m := re.search(r"[?&]page_no=(\d+)", h))]
         page_count = max(page_numbers, default=1)
@@ -189,56 +200,62 @@ def run_mdpi_campaign(
             page_url = f"https://www.mdpi.com/search?q={encoded_kw}&year_from={start_year}&year_to={end_year}&page_count=200&sort=pubdate&page_no={p}"
             if p > 1:
                 _progress(progress_callback, f"Loading page {p}...")
+                _human_delay(1.5, 3.0)
                 page.goto(page_url, wait_until="domcontentloaded")
                 _ensure_legacy_view(page)
                 page.locator(".article-item").first.wait_for(state="visible", timeout=20000)
 
+            _human_delay(1.0, 2.5)
             # Extra safety check: click Sign In if it appears
             sign_in_link = page.locator("a", has_text=re.compile(r"^\s*Sign In\s*$", re.IGNORECASE))
             if sign_in_link.count() and sign_in_link.first.is_visible():
                 _progress(progress_callback, "Clicking 'Sign In' to authorize export...")
                 sign_in_link.first.click(force=True)
-                time.sleep(3)
+                _human_delay(3.0, 4.0)
                 
                 # If it asks for credentials again
                 if page.locator("#username").count() > 0 and page.locator("#username").first.is_visible():
                     _progress(progress_callback, "MDPI requested credentials again. Re-authenticating...")
+                    _human_delay(1.0, 2.0)
                     page.locator("#username").fill(email)
-                    time.sleep(0.5)
+                    _human_delay(0.5, 1.5)
                     page.locator("#password").fill(password)
-                    time.sleep(0.5)
+                    _human_delay(0.5, 1.5)
                     page.get_by_role("button", name="Continue").click()
                     try:
                         page.wait_for_url(lambda u: "auth.mdpi.com/login" not in str(u), timeout=30000)
                     except PlaywrightTimeoutError:
                         pass
                 
+                _human_delay(2.0, 3.0)
                 page.goto(page_url, wait_until="domcontentloaded")
                 page.locator(".article-item").first.wait_for(state="visible", timeout=20000)
 
             # Scroll to load all articles
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            _human_delay(1.0, 2.0)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(2)
+            _human_delay(1.5, 3.0)
 
             _progress(progress_callback, f"Exporting page {p}/{page_count} to tab-delimited format...")
             
             # First, expand the export options dropdown
             if page.locator('a.export-options-show').count() > 0:
                 page.locator('a.export-options-show').first.click(force=True)
-            time.sleep(1)
+            _human_delay(1.0, 2.0)
             
             # Check 'Select All'
             if page.locator('#selectUnselectAll').count() > 0:
                 page.locator('#selectUnselectAll').first.check(force=True)
-            time.sleep(1)
+            _human_delay(1.0, 2.0)
             
             # Set format to Tab-delimited using the Chosen UI
             format_dropdown = page.locator("select[name='format_top'] + .chosen-container").first
             if format_dropdown.count() > 0:
                 format_dropdown.locator("a.chosen-single").first.click(force=True)
-                time.sleep(1)
+                _human_delay(0.8, 1.5)
                 format_dropdown.locator(".chosen-results li", has_text=re.compile(r"^\s*Tab-delimited\s*$")).first.click(force=True)
-                time.sleep(1)
+                _human_delay(1.0, 2.0)
 
             with page.expect_download(timeout=30000) as dl_info:
                 page.locator('#articleBrowserExport_top').first.click(force=True)
